@@ -1,0 +1,10 @@
+{
+  "id": "movable-ui",
+  "name": "Moveable UI",
+  "version": "0.10.0",
+  "author": "maze",
+  "description": "Unified HUD editor with movable vital bars, speed, quests, chat notifications, layout controls and widget diagnostics.",
+  "api_version": "1.0",
+  "files": ["main.lua", "hud.lua", "vitals.lua", "notifications.lua", "combat.lua"],
+  "permissions": []
+}
