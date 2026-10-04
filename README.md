@@ -13,6 +13,9 @@ objectives, HUD adapters and hidden-chat/System notifications.
    A per-widget lock disables this addon's handles for that widget.
 5. Press **GUI LOCK: OFF** to finish. The handles disappear and Options reopens.
 
+Drag the compact editor by its **GUI layout** heading or empty background.
+Its controls are centered and its position is remembered per character.
+
 The grid and vertical center guide are independent. Center snapping works with
 the grid off. **Center / reset widgets...** lists the discovered widgets and
 provides individual Center and Reset actions.
@@ -23,13 +26,25 @@ provides individual Center and Reset actions.
   action menu, combat opponents, native minimap and native meters.
 - **Vital bars:** movable/resizable health, stamina and energy bars. Native
   meters keep receiving updates and are restored when this addon is disabled.
-- **Speed:** moves the real speed selector, preserving its normal input.
+- **Speed:** moves the real speed selector in its own HUD container, preserving
+  its normal input and avoiding clipping by its original panel. Disabling the
+  addon restores its original parent.
 - **Quest objectives:** moves the real quest container rather than drawing a duplicate.
 - **Combat interface:** optionally moves the client's own combat display to a
-  saved screen anchor. Enable **Use movable combat interface** in this addon's
-  options, then unlock the GUI to drag its blue box. The native combat widget
-  keeps its actions, hotkeys and appearance. Turning the option off restores
-  its original placement.
+  fixed screen position using the client's native regions. Enable **Use movable
+  combat interface**, then unlock the GUI. **Draw combat GUI** in the compact
+  editor controls the same setting and shows all eight edit boxes. The action row,
+  openings, IP, cooldown and last moves each have a blue box and an independent
+  saved position and lock. Native actions, hotkeys and appearance are preserved.
+  Turning the option off restores player-following placement without deleting
+  your layout. Regions only appear during combat; their saved IDs survive
+  subsequent fights. Outside combat, or without a target for IP, labeled
+  placeholders let you arrange the layout in advance. These use the same saved
+  position keys as the real regions and disappear when you lock the GUI.
+  Placeholder dimensions match the native widget scan; live edit boxes follow
+  the actual region size. Hover a small box to see its full name.
+- **Native HUD regions:** command line, HUD notice and native hidden-chat lines
+  have separate move handles. These retain the client's own content and sizing.
 - **Hidden-chat notifications:** new messages from all channels, including
   System, appear for five seconds while Chat is hidden. Existing scrollback is
   not replayed and notification text is not saved. Unlocking exposes the panel
@@ -45,6 +60,8 @@ actual widgets. Defaults hide Equipment, Character Sheet, Inventory, Kith & Kin,
 Action search, Map, NKeyBelt, Native chat, Hidepanel, Pointer, Belt, Creel, Stack
 and **localinspect**. Both native LocalInspect widgets and named localinspect
 addon surfaces are covered. Explicit saved choices take priority over defaults.
+**Draw combat GUI** shows all eight combat boxes while editing, including any
+whose blue boxes were previously hidden.
 
 Positions, dimensions, per-widget locks and box visibility are kept per character.
 
@@ -69,13 +86,19 @@ control.
 
 - Per-widget locks affect this editor's bindings. Other addons' own drag grips
   require their cooperation.
-- The bottom System command line and widget front/back order are not exposed as
-  independent layout controls.
+- Native regions keep the client's size and drawing order; they cannot be
+  resized or raised independently of their painter.
+- The editor does not currently offer front/back controls for other widgets.
 - Moving the Multi-session dock needs an addon integration; it is outside the
   session HUD tree.
 - Fixed-size widgets do not gain resizing simply because they have an edit box.
 
 ## Consolidation and saved settings
+
+Version **0.11.0** requires a client supporting the
+[native regions API](https://github.com/irongete/brodgar-io-client/blob/master/docs/addons/api/ui/regions.md).
+The combat action row retains the `combat-interface` saved key. Other combat
+parts have new keys; the old transparent anchor/canvas is no longer created.
 
 Version **0.9.0** merges the former `movable-hud-layout`, `movable-vital-bars`,
 `movable-speed-selector`, `movable-quest-objectives` and

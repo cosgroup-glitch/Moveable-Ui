@@ -1,7 +1,7 @@
 {
   "id": "movable-ui",
   "name": "Moveable UI",
-  "version": "0.10.0",
+  "version": "0.11.2",
   "author": "maze",
   "description": "Unified HUD editor with movable vital bars, speed, quests, chat notifications, layout controls and widget diagnostics.",
   "api_version": "1.0",

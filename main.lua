@@ -83,6 +83,7 @@ local function elementLocked(record)
   return record.state.elementLocks[record.visibilityKey] == true
 end
 local function boxShown(record)
+  if record.spec.preview and combatOption:value() and unlocked() then return true end
   local saved = record.state.boxVisibility[record.visibilityKey]
   if type(saved) == "boolean" then return saved end
   local label = string.lower(record.spec.label)
@@ -114,6 +115,8 @@ local function register(spec)
     manage = true,
     multiple = spec.multiple == true,
     parentTarget = spec.parentTarget == true,
+    enabled = spec.enabled,
+    preview = spec.preview,
   }
   -- Dependencies may register after SessionEnteredWorld. Discover their
   -- surfaces immediately instead of waiting for another login/reload.
@@ -164,7 +167,7 @@ local function dropEditor(record)
   local target = record.target
   if record.spec.manage and target and target:exists() then
     pcall(function() target:draggable(nil) end)
-    pcall(function() target:resizable(nil) end)
+    if record.spec.resizable then pcall(function() target:resizable(nil) end) end
   end
   for _, key in ipairs({"grip", "lockBadge", "editBadge", "move"}) do
     closeWindow(record[key])
@@ -182,7 +185,10 @@ local function editorDraw(record, event)
   g:color(86, 188, 255, 255)
   g:rect(0, 0, width, height)
   if width >= 45 and height >= 14 then
-    g:atext(record.spec.label, width / 2, height / 2, 0.5, 0.5)
+    local text = hafen.ui():measure(record.spec.label)
+    if text.w <= width - 4 then
+      g:atext(record.spec.label, width / 2, height / 2, 0.5, 0.5)
+    end
   end
 end
 
@@ -229,7 +235,7 @@ local function buildEditor(record)
   local target = record.target
   if not target:exists() then return end
   local box = target:size()
-  if not box then return end
+  if not box or box.w <= 0 or box.h <= 0 then return end
 
   -- The blue box is the move handle. The corner is added second so it wins
   -- presses in the overlap and performs resizing instead.
@@ -241,11 +247,19 @@ local function buildEditor(record)
   record.move = move
   move:name("handle-" .. record.instanceId):parent(hud)
     :position(point.x - origin.x, point.y - origin.y):size(box.w, box.h)
+    :tooltip(record.spec.label)
   move:on("Draw", function(event) editorDraw(record, event) end)
   move:on("Update", function()
     if not (target:exists() and move:exists()) then return end
     local size = target:size()
     if size then
+      if size.w <= 0 or size.h <= 0 then
+        move:visible(false)
+        if record.lockBadge then record.lockBadge:visible(false) end
+        if record.editBadge then record.editBadge:visible(false) end
+        return
+      end
+      move:visible(true)
       local root, screen = target:rootPos(), hud:rootPos()
       move:position(root.x - screen.x, root.y - screen.y)
       move:size(size.w, size.h)
@@ -338,6 +352,11 @@ local function remember(record)
   if not record.state.session:character() then return end
   local ok, failure = pcall(function()
     record.target:remember(record.instanceId, record.state.session:store())
+    -- Owned placeholders also save their box. Keep the remembered placement,
+    -- but discard dimensions saved by earlier, oversized placeholder versions.
+    if record.isPreview then
+      record.target:size(record.spec.preview.w, record.spec.preview.h)
+    end
   end)
   if ok then
     record.remembered = true
@@ -349,6 +368,11 @@ end
 
 local function addTarget(state, spec, target, index, isPreview)
   if state.byTarget[target] then return end
+  -- A region has no usable rectangle until its painter has drawn a frame.
+  if target:type() == "Region" then
+    local box = target:size()
+    if not box or box.w <= 0 or box.h <= 0 then return end
+  end
   local suffix = (spec.multiple and index) and ("-" .. index) or ""
   -- Tree order can change when windows open, close or are raised. Never give
   -- an existing record's saved-position name to a different target.
@@ -408,22 +432,67 @@ local function dropRecord(record)
   dropEditor(record)
   if record.dragged then pcall(function() record.dragged:off() end) end
   if record.resized then pcall(function() record.resized:off() end) end
+  record.state.usedIds[record.instanceId] = nil
+  if record.isPreview and record.target:exists() then record.target:destroy() end
+  -- Revert drops the hold but preserves the saved location for the next fight.
+  if record.target:exists() and record.target:type() == "Region" then
+    pcall(function() record.target:revert() end)
+  end
 end
 
 sync = function(state)
   if not (state.session:exists() and state.session:character() and state.hud:exists()) then return end
+  -- Free saved names before discovering a replacement widget or a new fight.
+  for target, record in pairs(state.byTarget) do
+    if not target:exists() or (record.spec.enabled and not record.spec.enabled()) then
+      dropRecord(record)
+      state.byTarget[target] = nil
+    end
+  end
   for _, spec in pairs(registrations) do
     local ok, matches = true, {}
-    if spec.selector then
+    if spec.selector and (not spec.enabled or spec.enabled()) then
       ok, matches = pcall(function() return state.session:ui():matchAll(spec.selector) end)
     end
     if ok then
+      if spec.preview then
+        state.previews = state.previews or {}
+        local native = matches[1]
+        local box = native and native:size()
+        local painted = box and box.w > 0 and box.h > 0
+        local active = not spec.enabled or spec.enabled()
+        local showPreview = active and unlocked() and not painted
+        local preview = state.previews[spec.id]
+        if preview and (not showPreview or not preview:exists()) then
+          local record = state.byTarget[preview]
+          if record then dropRecord(record); state.byTarget[preview] = nil end
+          if preview:exists() then preview:destroy() end
+          state.previews[spec.id] = nil
+          preview = nil
+        end
+        if showPreview then
+          -- A live IP region can temporarily lose its target/box. Release its
+          -- saved name before using the edit placeholder under that same name.
+          if native and state.byTarget[native] then
+            dropRecord(state.byTarget[native]); state.byTarget[native] = nil
+          end
+          if not preview then
+            local room, p = state.hud:size(), spec.preview
+            preview = hafen.ui():widget():name("preview-" .. spec.id):parent(state.hud)
+              :size(p.w, p.h):position(math.max(0, math.floor(room.w / 2 + p.x)),
+                math.max(0, math.floor(room.h / 2 + p.y)))
+            state.previews[spec.id] = preview
+          end
+          matches = {preview}
+        end
+      end
       if #matches > 0 then
         local limit = spec.multiple and #matches or 1
         for index = 1, limit do
           local target = spec.parentTarget and matches[index]:parent() or matches[index]
           if target then attempt("discover " .. spec.id, function()
-            addTarget(state, spec, target, index, false)
+            addTarget(state, spec, target, index,
+              state.previews and state.previews[spec.id] == target)
           end) end
         end
       end
@@ -436,7 +505,7 @@ sync = function(state)
   -- DraggableWidget class, so supplement named adapters with real HUD windows
   -- and top-level surfaces, excluding structural/full-screen containers.
   local excluded = {GameUI=true, MapView=true, AlignPanel=true,
-    Widget=true, OptWnd=true, Fightsess=true}
+    Widget=true, OptWnd=true, Fightsess=true, Region=true, Speedget=true}
   local counts, seen = {}, {}
   local candidates = state.hud:children():list()
   for _, target in ipairs(state.session:ui():matchAll("window")) do
@@ -463,7 +532,10 @@ sync = function(state)
     else
       attempt("edit " .. record.instanceId, function()
         remember(record)
-        if unlocked() and boxShown(record) then arm(record) else dropEditor(record) end
+        local box = target:size()
+        if unlocked() and boxShown(record) and box and box.w > 0 and box.h > 0 then
+          arm(record)
+        else dropEditor(record) end
       end)
     end
   end
@@ -486,7 +558,7 @@ local function recordsForCurrentSession()
   if state then
     attempt("refresh widget list", function() sync(state) end)
     for _, record in pairs(state.byTarget) do
-      if record.target:exists() and not record.isPreview then records[#records + 1] = record end
+      if record.target:exists() then records[#records + 1] = record end
     end
   end
   table.sort(records, function(a, b) return a.instanceId < b.instanceId end)
@@ -574,7 +646,7 @@ local function scanWidgets()
         .. "\n----- WIDGET SCAN END -----")
     end)
     writeLog:text(ok and "Written!" or "Log failed")
-    hafen.timer():after(2000, function()
+    hafen.timer():after(2, function()
       if writeLog:exists() then writeLog:text("Write to log") end
     end)
   end) end)
@@ -615,7 +687,8 @@ openElementEditor = function(record)
     end)
   end)
   hafen.ui():label():parent(win):position(0, 140)
-    :text("Front/back order needs a Brodgar API change.")
+    :text(record.target:type() == "Region" and "Drawing order is controlled by the client." or
+      "This editor does not change front/back order.")
   win:pack():remember("edit-element-window")
   win:on("Close", function() hafen.timer():after(0, function()
     closeWindow(win)
@@ -722,16 +795,42 @@ local function openEditor()
   local state = session and sessions[session]
   if not state then return end
   local room = state.hud:size()
-  -- Match Kami's plain GUIEditPanel: no window decoration and no X button.
+  -- Plain panel: its background drags it, while controls retain their clicks.
   local win = hafen.ui():widget():name("editor"):parent(state.hud):size(270, 220)
     :position(math.max(0, math.floor((room.w - 270) / 2)), math.max(0, math.floor((room.h - 220) / 2)))
   editorWindow = win
+  -- New combat handles must not cover the editor's lock and option controls.
+  win:z(5)
   win:on("Draw", function(event)
     local g = event:g()
     g:color(10, 16, 22, 245); g:frect(0, 0, event:w(), event:h())
     g:color(86, 188, 255, 255); g:rect(0, 0, event:w(), event:h())
   end)
-  local root = hafen.ui():column():gap(8):parent(win):position(12, 12)
+  local drag = hafen.ui():widget():name("editor-drag"):parent(win):position(0, 0):size(270, 220)
+  drag:on("Draw", function(event)
+    local g = event:g()
+    g:color(210, 220, 235, 255)
+    g:atext("GUI layout", event:w() / 2, 14, 0.5, 0.5)
+  end)
+  win:draggable(drag)
+  -- Columns always left-align their children. Lay out a plain surface instead
+  -- so every control, including labels and checkboxes, has the same centre.
+  local root = hafen.ui():widget():parent(win):position(12, 32)
+  local function layout()
+    if not win:exists() then return end
+    local children = root:children():list()
+    local width, height = 246, 0
+    for _, child in ipairs(children) do width = math.max(width, child:size().w) end
+    for _, child in ipairs(children) do
+      local box = child:size()
+      child:position(math.floor((width - box.w) / 2), height)
+      height = height + box.h + 8
+    end
+    height = math.max(0, height - 8)
+    root:size(width, height)
+    win:size(width + 24, height + 44)
+    drag:size(width + 24, height + 44)
+  end
   lockButton = hafen.ui():button():parent(root):size(240):text(lockText())
   lockButton:on("Pressed", function() hafen.timer():after(0, lockFromEditor) end)
   hafen.ui():check():parent(root):text("Show and snap to grid"):bind(gridOption)
@@ -739,17 +838,21 @@ local function openEditor()
   local sizeSlider = hafen.ui():slider():parent(root):size(190):bind(gridSizeOption)
   sizeSlider:on("Changed", function()
     sizeLabel:text("Grid size: " .. tostring(gridSizeOption:value()) .. " px")
+    layout()
   end)
   hafen.ui():check():parent(root):text("Snap to screen center line"):bind(centerOption)
+  hafen.ui():check():parent(root):text("Draw combat GUI"):bind(combatOption)
+    :tooltip("Show all eight combat edit boxes, including placeholders outside combat")
   local widgets = hafen.ui():button():parent(root):size(190):text("Center / reset widgets...")
   widgets:on("Pressed", function() hafen.timer():after(0, openList) end)
   local boxes = hafen.ui():button():parent(root):size(190):text("Show / hide blue boxes...")
   boxes:on("Pressed", function() hafen.timer():after(0, openVisibilityList) end)
   local debug = hafen.ui():button():parent(root):size(190):text("Scan widgets...")
   debug:on("Pressed", function() hafen.timer():after(0, scanWidgets) end)
-  win:size(270, root:size().h + 24)
-  win:position(math.max(0, math.floor((room.w - 270) / 2)),
+  layout()
+  win:position(math.max(0, math.floor((room.w - win:size().w) / 2)),
     math.max(0, math.floor((room.h - win:size().h) / 2)))
+  win:remember("gui-editor", session:store())
 end
 
 local function findWindow(node)
@@ -836,7 +939,7 @@ addonOptions:panel(function(root)
   end)
   hafen.ui():label():parent(root):text("Unlock to open the compact HUD editor.")
   hafen.ui():check():parent(root):text("Use movable combat interface"):bind(combatOption)
-    :tooltip("Replace the player-anchored combat display with a fixed movable panel")
+    :tooltip("Fix native combat regions on screen; unlock to move each part")
   hafen.ui():label():parent(root):text("Guide: addons/movable-ui/README.md")
 end)
 
@@ -849,6 +952,7 @@ combatOption:on("Changed", function()
     for _, callback in ipairs(combatChanged) do
       attempt("combat option", function() callback(combatOption:value() == true) end)
     end
+    applyMode()
   end)
 end)
 
